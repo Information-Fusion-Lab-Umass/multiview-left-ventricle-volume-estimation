@@ -27,3 +27,9 @@ def dice_coef(output, target):
 
     return (2. * intersection + smooth) / \
         (output.sum() + target.sum() + smooth)
+
+def rmse(output, target):
+    if torch.is_tensor(output):
+        output = output.data.cpu().numpy()
+    
+    return np.sqrt(np.mean((output-target)**2))

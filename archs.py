@@ -1,10 +1,15 @@
 import torch
 from torch import nn
+import torch.nn.functional as F
 
-__all__ = ['UNet', 'NestedUNet']
+__all__ = ['UNet', 'NestedUNet', 'VolumeEstimation']
 
 
 class VGGBlock(nn.Module):
+    '''
+        Consists of 2 Convolution Layers with ReLU and batch normalization between them. 
+        params: Setting the filter size through the number of channels in input, middle and the final output.
+    '''
     def __init__(self, in_channels, middle_channels, out_channels):
         super().__init__()
         self.relu = nn.ReLU(inplace=True)
@@ -26,6 +31,10 @@ class VGGBlock(nn.Module):
 
 
 class UNet(nn.Module):
+    '''
+    Unet Architecture (Reference - https://arxiv.org/pdf/1505.04597.pdf)
+    params: number of classes and input channels.
+    '''	
     def __init__(self, num_classes, input_channels=3, **kwargs):
         super().__init__()
 
@@ -65,12 +74,14 @@ class UNet(nn.Module):
 
 
 class NestedUNet(nn.Module):
-    def __init__(self, num_classes, input_channels=3, deep_supervision=False, **kwargs):
+    '''
+    Unet++ Architecture (Reference - https://arxiv.org/pdf/1807.10165.pdf)
+    params: number of classes and input channels.
+    '''	
+    def __init__(self, num_classes, input_channels=3, **kwargs):
         super().__init__()
 
         nb_filter = [32, 64, 128, 256, 512]
-
-        self.deep_supervision = deep_supervision
 
         self.pool = nn.MaxPool2d(2, 2)
         self.up = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
@@ -95,13 +106,7 @@ class NestedUNet(nn.Module):
 
         self.conv0_4 = VGGBlock(nb_filter[0]*4+nb_filter[1], nb_filter[0], nb_filter[0])
 
-        if self.deep_supervision:
-            self.final1 = nn.Conv2d(nb_filter[0], num_classes, kernel_size=1)
-            self.final2 = nn.Conv2d(nb_filter[0], num_classes, kernel_size=1)
-            self.final3 = nn.Conv2d(nb_filter[0], num_classes, kernel_size=1)
-            self.final4 = nn.Conv2d(nb_filter[0], num_classes, kernel_size=1)
-        else:
-            self.final = nn.Conv2d(nb_filter[0], num_classes, kernel_size=1)
+        self.final = nn.Conv2d(nb_filter[0], num_classes, kernel_size=1)
 
 
     def forward(self, input):
@@ -124,13 +129,101 @@ class NestedUNet(nn.Module):
         x1_3 = self.conv1_3(torch.cat([x1_0, x1_1, x1_2, self.up(x2_2)], 1))
         x0_4 = self.conv0_4(torch.cat([x0_0, x0_1, x0_2, x0_3, self.up(x1_3)], 1))
 
-        if self.deep_supervision:
-            output1 = self.final1(x0_1)
-            output2 = self.final2(x0_2)
-            output3 = self.final3(x0_3)
-            output4 = self.final4(x0_4)
-            return [output1, output2, output3, output4]
+        output = self.final(x0_4)
+        return output
 
-        else:
-            output = self.final(x0_4)
-            return output
+class RegressionBlock(nn.Module):
+    #def __init__(self, in_channels, middle_channels, out_channels):
+    def __init__(self, numSlices):
+        super().__init__()
+        #self.fc1 = nn.Linear(in_channels, middle_channels)
+        #self.fc2 = nn.Linear(middle_channels, out_channels)
+
+        # Assumes images are 96 x 96 pixels
+
+        # 1-4
+        self.conv1 = nn.Conv2d(in_channels=numSlices,out_channels=(numSlices*2),kernel_size=5,stride=1,padding=0,bias=False)
+        nn.init.kaiming_uniform_(self.conv1.weight)
+        self.normLay1 = nn.LayerNorm(normalized_shape=[(numSlices*2),88,88]) # May need to change y and z in [x,y,z]
+        self.relu1 = nn.LeakyReLU()
+        self.maxpl1 = nn.MaxPool2d(kernel_size=2,stride=2)
+
+        # 5-9
+        self.depth1 = nn.Conv2d(in_channels=(numSlices*2),out_channels=(numSlices*2),kernel_size=5,stride=2,padding=0,groups=(numSlices*2),bias=False)
+        nn.init.kaiming_uniform_(self.depth1.weight)
+        self.normLay2 = nn.LayerNorm(normalized_shape=[(numSlices*2),20,20]) # Will likely have to change y and z in [x,y,z]
+        self.relu2 = nn.LeakyReLU()
+        self.maxpl2 = nn.MaxPool2d(kernel_size=2,stride=2)
+        self.point1 = nn.Conv2d(in_channels=(numSlices*2),out_channels=(numSlices*4),kernel_size=1,stride=1,padding=0,bias=True)
+        nn.init.xavier_uniform_(self.point1.weight)
+        self.point1.bias.data.fill_(0)
+
+        # 10
+        self.fc1 = nn.Conv2d(in_channels=(numSlices*2),out_channels=1,kernel_size=4,stride=1,padding=0,bias=True) # Will likely need to change kernel_size
+        nn.init.xavier_uniform_(self.fc1.weight)
+        self.fc1.bias.data.fill_(0)
+
+    def forward(self, x):
+        #mid = self.fc1(x)
+        #mid = F.relu(mid)
+        #out = self.fc2(mid)
+        #out = torch.flatten(out)
+
+        # 1-4
+        out = self.conv1(x)
+        out = self.normLay1(out)
+        out = self.relu1(out)
+        out = self.maxpl1(out)
+
+        # 5-9
+        out = self.depth1(out)
+        out = self.normLay2(out)
+        out = self.relu2(out)
+        out = self.maxpl2(out)
+        out = self.point1(out)
+
+        # 10
+        out = self.fc1(out)
+        
+        return out
+
+class VolumeEstimation(nn.Module):
+    '''
+    Unet++ Architecture (Reference - https://arxiv.org/pdf/1807.10165.pdf)
+    params: number of classes and input channels.
+    '''	
+    def __init__(self, shortSegModel, longSegModel, fusionMethod='Simple_Concatenation', **kwargs):
+        super().__init__()
+
+        self.shortSegModel = shortSegModel
+        self.longSegModel = longSegModel
+        self.numSlices = len(shortSegModel) + len(longSegModel)
+        self.fusionMethod = fusionMethod
+
+        # Volume Regression Layer
+        self.regression = RegressionBlock(self.numSlices)
+
+    def segmentationFusion(self, shortSegs, longSegs):
+        if self.fusionMethod == 'Simple_Concatenation':
+            fusionBlock = shortSegs
+            for long in longSegs:
+                fusionBlock.append(long)
+
+        return fusionBlock
+
+    def forward(self, input):
+        short_imgs, long_imgs = input
+
+        # Pass images through segmentation components of the network
+        shortSegs = []
+        longSegs = []
+        for short in short_imgs:
+            shortSegs.append(self.shortSegModel(short))
+
+        for long in long_imgs:
+            longSegs.append(self.longSegModel(long))
+
+        regInput = self.segmentationFusion(shortSegs, longSegs)
+        output = self.regression(regInput)
+
+        return output

@@ -5,8 +5,10 @@ import numpy as np
 import torch
 import torch.utils.data
 
+__all__ = ['SegmentationDataset', 'VolumeDataset']
 
-class Dataset(torch.utils.data.Dataset):
+
+class SegmentationDataset(torch.utils.data.Dataset):
     def __init__(self, img_ids, img_dir, mask_dir, img_ext, mask_ext, num_classes, transform=None):
         """
         Args:
@@ -22,9 +24,9 @@ class Dataset(torch.utils.data.Dataset):
             Make sure to put the files as the following structure:
             <dataset name>
             ├── images
-            |   ├── 0a7e06.jpg
-            │   ├── 0aab0a.jpg
-            │   ├── 0b1761.jpg
+            |   ├── 0a7e06.png
+            │   ├── 0aab0a.png
+            │   ├── 0b1761.png
             │   ├── ...
             |
             └── masks
@@ -74,3 +76,72 @@ class Dataset(torch.utils.data.Dataset):
         mask = mask.transpose(2, 0, 1)
         
         return img, mask, {'img_id': img_id}
+
+
+class VolumeDataset(torch.utils.data.Dataset):
+    def __init__(self, short_img_ids, long_img_ids, img_dir, img_ext, volume, transform=None):
+        """
+        Args:
+            short_img_ids (list): Short axis image ids.
+            long_img_ids (list): Long axis image ids.
+            img_dir: Image file directory.
+            img_ext (str): Image file extension.
+            num_classes (int): Number of classes.
+            volume (dec): Current patient's LV volume
+            transform (Compose, optional): Compose transforms of albumentations. Defaults to None.
+        
+        Note:
+            Make sure to put the files as the following structure:
+            <dataset name>
+            ├── images
+            |   ├── 0a7e06.png
+            │   ├── 0aab0a.png
+            │   ├── 0b1761.png
+            │   ├── ...
+            ...
+        """
+        self.short_img_ids = short_img_ids
+        self.long_img_ids = long_img_ids
+        self.img_dir = img_dir
+        self.img_ext = img_ext
+        self.volume = volume
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.short_img_ids) + len(self.long_img_ids)
+
+    def __getitem__(self, idx):
+        short_img_ids = self.short_img_ids[idx]
+        long_img_ids = self.long_img_ids[idx]
+        volume = self.volume[idx]
+
+        short_imgs = []
+        long_imgs = []
+
+        for short_img in short_img_ids:
+            img = cv2.imread(os.path.join(self.img_dir, short_img + self.img_ext))
+
+
+            if self.transform is not None:
+                augmented = self.transform(image=img)
+                img = augmented['image']
+            
+            img = img.astype('float32') / 255
+            img = img.transpose(2, 0, 1)
+
+            short_imgs.append(img)
+
+        for long_img in long_img_ids:
+            img = cv2.imread(os.path.join(self.img_dir, long_img + self.img_ext))
+
+            if self.transform is not None:
+                augmented = self.transform(image=img)
+                img = augmented['image']
+            
+            img = img.astype('float32') / 255
+            img = img.transpose(2, 0, 1)
+
+            long_imgs.append(img)
+        
+        
+        return short_imgs, long_imgs, volume, {'short_axis_ids': short_img_ids, 'long_axis_ids': long_img_ids, 'volume': volume}

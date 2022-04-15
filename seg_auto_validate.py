@@ -3,6 +3,7 @@ import os
 from collections import OrderedDict
 from glob import glob
 
+import cv2
 import pandas as pd
 import torch
 import torch.backends.cudnn as cudnn
@@ -16,19 +17,14 @@ from torch.optim import lr_scheduler
 from tqdm import tqdm
 
 import archs
-#import areaArchs
 import losses
-from dataset import Dataset
+from dataset import SegmentationDataset
 from metrics import iou_score
 from metrics import dice_coef
 from utils import AverageMeter, str2bool
 
-import matplotlib.pyplot as plt
-
 ARCH_NAMES = archs.__all__
-#ARCH_NAMES = areaArchs.__all__
 LOSS_NAMES = losses.__all__
-LOSS_NAMES.append('BCEWithLogitsLoss')
 
 
 def parse_args():
@@ -105,7 +101,6 @@ def parse_args():
 
     return config
 
-
 def train(config, train_loader, model, criterion, optimizer):
     avg_meters = {'loss': AverageMeter(),
                   'iou': AverageMeter(),
@@ -115,25 +110,14 @@ def train(config, train_loader, model, criterion, optimizer):
 
     pbar = tqdm(total=len(train_loader))
     for input, target, _ in train_loader:
-        #input = input.cuda()
-        #target = target.cuda()
-        #print(target.shape)
-        #exit()
+        input = input.cuda()
+        target = target.cuda()
 
         # compute output
-        if config['deep_supervision']:
-            outputs = model(input)
-            loss = 0
-            for output in outputs:
-                loss += criterion(output, target)
-            loss /= len(outputs)
-            iou = iou_score(outputs[-1], target)
-            dice = dice_coef(outputs[-1], target)
-        else:
-            output = model(input)
-            loss = criterion(output, target)
-            iou = iou_score(output, target)
-            dice = dice_coef(output, target)
+        output = model(input)
+        loss = criterion(output, target)
+        iou = iou_score(output, target)
+        dice = dice_coef(output, target)
 
         # compute gradient and do optimizing step
         optimizer.zero_grad()
@@ -169,23 +153,14 @@ def validate(config, val_loader, model, criterion):
     with torch.no_grad():
         pbar = tqdm(total=len(val_loader))
         for input, target, _ in val_loader:
-            #input = input.cuda()
-            #target = target.cuda()
+            input = input.cuda()
+            target = target.cuda()
 
             # compute output
-            if config['deep_supervision']:
-                outputs = model(input)
-                loss = 0
-                for output in outputs:
-                    loss += criterion(output, target)
-                loss /= len(outputs)
-                iou = iou_score(outputs[-1], target)
-                dice = dice_coef(outputs[-1], target)
-            else:
-                output = model(input)
-                loss = criterion(output, target)
-                iou = iou_score(output, target)
-                dice = dice_coef(output, target)
+            output = model(input)
+            loss = criterion(output, target)
+            iou = iou_score(output, target)
+            dice = dice_coef(output, target)
 
             avg_meters['loss'].update(loss.item(), input.size(0))
             avg_meters['iou'].update(iou, input.size(0))
@@ -204,11 +179,12 @@ def validate(config, val_loader, model, criterion):
                         ('iou', avg_meters['iou'].avg),
                         ('dice', avg_meters['dice'].avg)])
 
-
-def main():
+def main_func(train_ids, val_ids, modelName, fileName):
     config = vars(parse_args())
-
+    config['name'] = modelName
+    fw = open('batch_results_train/'+ fileName, 'w')
     print('config of dataset is ' + str(config['dataset']))
+    fw.write('config of dataset is ' + str(config['dataset']) + '\n')    
     if config['name'] is None:
         if config['deep_supervision']:
             config['name'] = '%s_%s_wDS' % (config['dataset'], config['arch'])
@@ -217,33 +193,32 @@ def main():
     os.makedirs('models/%s' % config['name'], exist_ok=True)
 
     print('-' * 20)
+    fw.write('-' * 20 + '\n')
     for key in config:
         print('%s: %s' % (key, config[key]))
+        fw.write('%s: %s' % (key, config[key]) + '\n')
     print('-' * 20)
+    fw.write('-' * 20 + '\n')
 
     with open('models/%s/config.yml' % config['name'], 'w') as f:
         yaml.dump(config, f)
 
     # define loss function (criterion)
     if config['loss'] == 'BCEWithLogitsLoss':
-        #criterion = nn.BCEWithLogitsLoss().cuda()
-        criterion = nn.BCEWithLogitsLoss()
+        criterion = nn.BCEWithLogitsLoss().cuda()
     else:
-        #criterion = losses.__dict__[config['loss']]().cuda()
-        criterion = losses.__dict__[config['loss']]()
+        criterion = losses.__dict__[config['loss']]().cuda()
 
     cudnn.benchmark = True
 
     # create model
     print("=> creating model %s" % config['arch'])
+    fw.write("=> creating model %s" % config['arch'] + '\n')   
     model = archs.__dict__[config['arch']](config['num_classes'],
                                            config['input_channels'],
                                            config['deep_supervision'])
-    #model = areaArchs.__dict__[config['arch']](config['num_classes'],
-    #                                       config['input_channels'],
-    #                                       config['deep_supervision'])
 
-    #model = model.cuda()
+    model = model.cuda()
 
     params = filter(lambda p: p.requires_grad, model.parameters())
     if config['optimizer'] == 'Adam':
@@ -272,68 +247,55 @@ def main():
     img_ids = glob(os.path.join('inputs', config['dataset'], 'images', '*' + config['img_ext']))
     img_ids = [os.path.splitext(os.path.basename(p))[0] for p in img_ids]
 
-    #train_img_ids, val_img_ids = train_test_split(img_ids, test_size=0.2, random_state=41)
-    val_idx = [0, 1]
+    train_ids = []
+    for train_group in train_ids:
+        with open(train_group, 'r') as file:
+            train_ids.append([line.rstrip() for line in file])
+
+    val_ids = []
+    with open(val_ids, 'r') as file:
+        val_ids = [line.rstrip() for line in file]
+    
     val_img_ids = []
     train_img_ids = []
 
     for image in img_ids:
         im_begin = image.split('.')[0]
-        if int(im_begin[-1]) in val_idx:
+        if int(im_begin[-1]) in val_ids:
             val_img_ids.append(image)
-        else:
+        elif int(im_begin[-1]) in train_ids:
             train_img_ids.append(image)
 
-    '''train_transform = Compose([
-        transforms.RandomRotate90(),
-        transforms.Flip(),
-        OneOf([
-            transforms.HueSaturationValue(),
-            transforms.RandomBrightness(),
-            transforms.RandomContrast(),
-        ], p=1),
-        transforms.Resize(config['input_h'], config['input_w']),
-        transforms.Normalize(),
-    ])
-
-    val_transform = Compose([
-        transforms.Resize(config['input_h'], config['input_w']),
-        transforms.Normalize(),
-    ])
-    '''
-    train_transform = Compose([
-        #transforms.RandomRotate90(),
-        #transforms.Flip(),
-        #OneOf([
-        #    transforms.HueSaturationValue(),
-        #    transforms.RandomBrightness(),
-        #    transforms.RandomContrast(),
-        #], p=1),
-        transforms.Resize(config['input_h'], config['input_w']),
-        transforms.Normalize(),
-    ])
-
-    val_transform = Compose([
+    # train_transform = Compose([
+    #     transforms.Resize(config['input_h'], config['input_w']),
+    #     transforms.Normalize(),
+    # ])
+    
+    # val_transform = Compose([
+    #     transforms.Resize(config['input_h'], config['input_w']),
+    #     transforms.Normalize(),
+    # ])
+    transform = Compose([
         transforms.Resize(config['input_h'], config['input_w']),
         transforms.Normalize(),
     ])
     
-    train_dataset = Dataset(
+    train_dataset = SegmentationDataset(
         img_ids=train_img_ids,
         img_dir=os.path.join('inputs', config['dataset'], 'images'),
         mask_dir=os.path.join('inputs', config['dataset'], 'masks'),
         img_ext=config['img_ext'],
         mask_ext=config['mask_ext'],
         num_classes=config['num_classes'],
-        transform=train_transform)
-    val_dataset = Dataset(
+        transform=transform)
+    val_dataset = SegmentationDataset(
         img_ids=val_img_ids,
         img_dir=os.path.join('inputs', config['dataset'], 'images'),
         mask_dir=os.path.join('inputs', config['dataset'], 'masks'),
         img_ext=config['img_ext'],
         mask_ext=config['mask_ext'],
         num_classes=config['num_classes'],
-        transform=val_transform)
+        transform=transform)
 
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
@@ -353,16 +315,18 @@ def main():
         ('lr', []),
         ('loss', []),
         ('iou', []),
+        ('dice', []),
         ('val_loss', []),
         ('val_iou', []),
-        ('dice', []),
+        ('val_dice', []), 
     ])
 
-    best_iou = 0
+    #best_iou = 0
     trigger = 0
     best_dice = 0
     for epoch in range(config['epochs']):
         print('Epoch [%d/%d]' % (epoch, config['epochs']))
+        fw.write('Epoch [%d/%d]' % (epoch, config['epochs']) + '\n')    
 
         # train for one epoch
         train_log = train(config, train_loader, model, criterion, optimizer)
@@ -374,43 +338,188 @@ def main():
         elif config['scheduler'] == 'ReduceLROnPlateau':
             scheduler.step(val_log['loss'])
 
-        print('loss %.4f - iou %.4f - val_loss %.4f - val_iou %.4f'
-              % (train_log['loss'], train_log['iou'], val_log['loss'], val_log['iou']))
+        print('loss %.4f - iou %.4f - dice %.4f - val_loss %.4f - val_iou %.4f val_dice %.4f'
+              % (train_log['loss'], train_log['iou'], train_log['dice'], val_log['loss'], val_log['iou'], val_log['dice']))
+        fw.write('loss %.4f - iou %.4f - dice %.4f - val_loss %.4f - val_iou %.4f val_dice %.4f'
+              % (train_log['loss'], train_log['iou'], train_log['dice'], val_log['loss'], val_log['iou'], val_log['dice']) + '\n')
 
         log['epoch'].append(epoch)
         log['lr'].append(config['lr'])
         log['loss'].append(train_log['loss'])
         log['iou'].append(train_log['iou'])
+        log['dice'].append(train_log['dice'])
         log['val_loss'].append(val_log['loss'])
         log['val_iou'].append(val_log['iou'])
-        log['dice'].append(val_log['dice'])
+        log['val_dice'].append(val_log['dice'])
 
         pd.DataFrame(log).to_csv('models/%s/log.csv' %
                                  config['name'], index=False)
 
         trigger += 1
-        '''
-        if val_log['iou'] > best_iou:
-            torch.save(model.state_dict(), 'models/%s/model.pth' %
-                       config['name'])
-            best_iou = val_log['iou']
-            print("=> saved best model")
-            trigger = 0
-        '''
+
         if val_log['dice'] > best_dice:
             torch.save(model.state_dict(), 'models/%s/model.pth' %
                        config['name'])
             best_dice = val_log['dice']
             print("=> saved best model")
+            fw.write("=> saved best model" + '\n')
             trigger = 0
 
         # early stopping
         if config['early_stopping'] >= 0 and trigger >= config['early_stopping']:
             print("=> early stopping")
+            fw.write("=> early stopping" + '\n')
             break
 
-        #torch.cuda.empty_cache()
+        torch.cuda.empty_cache()
 
+
+def perform_validation(modelName, test_ids, fileName):
+    #args = parse_args()
+
+    fw = open('batch_results_val/' + fileName, 'w') 
+    #with open('models/%s/config.yml' % args.name, 'r') as f:
+    with open('models/%s/config.yml' % modelName, 'r') as f:   
+        config = yaml.load(f, Loader=yaml.FullLoader)
+ 
+    #config['dataset'] = 'ax_crop_val_' + str(testNum) + '_' + str(testNum + 1)
+
+    print('-'*20)
+    fw.write('-'*20 + '\n')
+    for key in config.keys():
+        print('%s: %s' % (key, str(config[key])))
+        fw.write('%s: %s' % (key, str(config[key])) + '\n')
+    print('-'*20)
+    fw.write('-'*20 + '\n')
+
+    cudnn.benchmark = True
+
+    # create model
+    print("=> creating model %s" % config['arch'])
+    fw.write("=> creating model %s" % config['arch'] + '\n')
+    model = archs.__dict__[config['arch']](config['num_classes'],
+                                           config['input_channels'],
+                                           config['deep_supervision'])
+
+    model = model.cuda()
+
+    # Data loading code
+    img_ids = glob(os.path.join('inputs', config['dataset'], 'images', '*' + config['img_ext']))
+    img_ids = [os.path.splitext(os.path.basename(p))[0] for p in img_ids]
+
+    #_, val_img_ids = train_test_split(img_ids, test_size=0.99, random_state=41)
+    test_idx = []
+    with open(test_ids, 'r') as file:
+        test_idx = [line.rstrip() for line in file]
+
+    test_img_ids = []
+    for img in img_ids:
+        im_begin = img.split('.')[0]
+        if int(im_begin[-1]) in test_idx:
+            test_img_ids.append(img)
+
+    model.load_state_dict(torch.load('models/%s/model.pth' %
+                                     config['name']))
+    model.eval()
+
+    val_transform = Compose([
+        transforms.Resize(config['input_h'], config['input_w']),
+        transforms.Normalize(),
+    ])
+
+    val_dataset = SegmentationDataset(
+        img_ids=test_img_ids,
+        img_dir=os.path.join('inputs', config['dataset'], 'images'),
+        mask_dir=os.path.join('inputs', config['dataset'], 'masks'),
+        img_ext=config['img_ext'],
+        mask_ext=config['mask_ext'],
+        num_classes=config['num_classes'],
+        transform=val_transform)
+    val_loader = torch.utils.data.DataLoader(
+        val_dataset,
+        batch_size=config['batch_size'],
+        shuffle=False,
+        num_workers=config['num_workers'],
+        drop_last=False)
+
+
+    avg_meter = AverageMeter()
+    dice_avg_meter = AverageMeter()
+
+    for c in range(config['num_classes']):
+        os.makedirs(os.path.join('outputs', config['name'], str(c)), exist_ok=True)
+    with torch.no_grad():
+        for input, target, meta in tqdm(val_loader, total=len(val_loader)):
+            input = input.cuda()
+            target = target.cuda()
+
+            # compute output
+            if config['deep_supervision']:
+                output = model(input)[-1]
+            else:
+                output = model(input)
+
+            iou = iou_score(output, target)
+            avg_meter.update(iou, input.size(0))
+
+            dice = dice_coef(output, target)
+            dice_avg_meter.update(dice, input.size(0))
+
+            output = torch.sigmoid(output).cpu().numpy()
+
+            for i in range(len(output)):
+                for c in range(config['num_classes']):
+                    cv2.imwrite(os.path.join('outputs', config['name'], str(c), meta['img_id'][i] + '.jpg'),
+                                (output[i, c] * 255).astype('uint8'))
+
+    print('IoU: %.4f' % avg_meter.avg)
+    fw.write('IoU: %.4f' % avg_meter.avg)
+    print('Dice: %.4f' % dice_avg_meter.avg)
+    fw.write('Dice: %.4f' % dice_avg_meter.avg)
+
+    torch.cuda.empty_cache()
+
+def main():
+    '''params = {}
+    params['dataset'] = 'sa_dataset'
+    params['loss'] = 'BCEDiceLoss'
+    params['arch'] = 'NestedUNet'
+    params['num_classes'] = 2
+    params['input_channels'] = 3
+    params['deep_supervision'] = False
+    params['optimizer'] = 'SGD'
+    params['lr'] = 1e-3
+    params['weight_decay'] = 1e-4
+    params['momentum'] = 0.9
+    params['nesterov'] = False
+    params['scheduler'] = 'CosineAnnealingLR'
+    params['img_ext'] = 'png'
+    params['mask_ext'] = 'png'
+    params['input_h'] = 96   ## can be set to a command line argument in the future
+    params['input_w'] = 96   ## can be set to a command line argument in the future
+    params['batch_size'] = 16
+    params['num_workers'] = 4
+    params['epochs'] = 100
+    params['early_stopping'] = -1
+    params['min_lr'] = 1e-5
+    # extras
+    params['factor'] = 0.1
+    params['patience'] = 2
+    params['milestones'] = '1,2'
+    params['gamma'] = 0.66666
+    '''
+    #params = vars(parse_args())
+    id_groups = ['ids_group1', 'ids_group2', 'ids_group3', 'ids_group4', 'ids_group5']
+    for test_ids in id_groups:
+        training_groups = id_groups[id_groups != test_ids]
+        for val_ids in training_groups:
+            train_ids = training_groups[training_groups != val_ids]
+
+            modelName = 'shortAxis_val_' + val_ids + '_test_' + test_ids
+            trainFileName = 'shortAxis_val_' + val_ids + '_test_' + test_ids + '_trainingResult'
+            testFileName = 'shortAxis_val_' + val_ids + '_test_' + test_ids + '_testResult'
+            main_func(train_ids, val_ids, modelName, trainFileName)
+            perform_validation(modelName, test_ids, testFileName)
 
 if __name__ == '__main__':
     main()
