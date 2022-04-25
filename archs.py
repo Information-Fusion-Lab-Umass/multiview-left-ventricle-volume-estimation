@@ -1,6 +1,7 @@
 import torch
 from torch import nn
 import torch.nn.functional as F
+import numpy as np
 
 __all__ = ['UNet', 'NestedUNet', 'VolumeEstimation']
 
@@ -132,58 +133,75 @@ class NestedUNet(nn.Module):
         output = self.final(x0_4)
         return output
 
-class RegressionBlock(nn.Module):
-    #def __init__(self, in_channels, middle_channels, out_channels):
-    def __init__(self, numSlices):
+# class RegressionBlock(nn.Module):
+#     #def __init__(self, in_channels, middle_channels, out_channels):
+#     def __init__(self, numSlices):
+#         super().__init__()
+#         #self.fc1 = nn.Linear(in_channels, middle_channels)
+#         #self.fc2 = nn.Linear(middle_channels, out_channels)
+
+#         # Assumes images are 96 x 96 pixels
+
+#         # 1-4
+#         self.conv1 = nn.Conv2d(in_channels=numSlices,out_channels=(numSlices*2),kernel_size=5,stride=1,padding=0,bias=False)
+#         nn.init.kaiming_uniform_(self.conv1.weight)
+#         self.normLay1 = nn.LayerNorm(normalized_shape=[(numSlices*2),88,88]) # May need to change y and z in [x,y,z]
+#         self.relu1 = nn.LeakyReLU()
+#         self.maxpl1 = nn.MaxPool2d(kernel_size=2,stride=2)
+
+#         # 5-9
+#         self.depth1 = nn.Conv2d(in_channels=(numSlices*2),out_channels=(numSlices*2),kernel_size=5,stride=2,padding=0,groups=(numSlices*2),bias=False)
+#         nn.init.kaiming_uniform_(self.depth1.weight)
+#         self.normLay2 = nn.LayerNorm(normalized_shape=[(numSlices*2),20,20]) # Will likely have to change y and z in [x,y,z]
+#         self.relu2 = nn.LeakyReLU()
+#         self.maxpl2 = nn.MaxPool2d(kernel_size=2,stride=2)
+#         self.point1 = nn.Conv2d(in_channels=(numSlices*2),out_channels=(numSlices*4),kernel_size=1,stride=1,padding=0,bias=True)
+#         nn.init.xavier_uniform_(self.point1.weight)
+#         self.point1.bias.data.fill_(0)
+
+#         # 10
+#         self.fc1 = nn.Conv2d(in_channels=(numSlices*2),out_channels=1,kernel_size=4,stride=1,padding=0,bias=True) # Will likely need to change kernel_size
+#         nn.init.xavier_uniform_(self.fc1.weight)
+#         self.fc1.bias.data.fill_(0)
+
+#     def forward(self, x):
+#         #mid = self.fc1(x)
+#         #mid = F.relu(mid)
+#         #out = self.fc2(mid)
+#         #out = torch.flatten(out)
+
+#         # 1-4
+#         out = self.conv1(x)
+#         out = self.normLay1(out)
+#         out = self.relu1(out)
+#         out = self.maxpl1(out)
+
+#         # 5-9
+#         out = self.depth1(out)
+#         out = self.normLay2(out)
+#         out = self.relu2(out)
+#         out = self.maxpl2(out)
+#         out = self.point1(out)
+
+#         # 10
+#         out = self.fc1(out)
+        
+#         return out
+
+class FCBlock(nn.Module):
+    def __init__(self, in_channels, middle_one_channels, middle_two_channels, out_channels):
         super().__init__()
-        #self.fc1 = nn.Linear(in_channels, middle_channels)
-        #self.fc2 = nn.Linear(middle_channels, out_channels)
-
-        # Assumes images are 96 x 96 pixels
-
-        # 1-4
-        self.conv1 = nn.Conv2d(in_channels=numSlices,out_channels=(numSlices*2),kernel_size=5,stride=1,padding=0,bias=False)
-        nn.init.kaiming_uniform_(self.conv1.weight)
-        self.normLay1 = nn.LayerNorm(normalized_shape=[(numSlices*2),88,88]) # May need to change y and z in [x,y,z]
-        self.relu1 = nn.LeakyReLU()
-        self.maxpl1 = nn.MaxPool2d(kernel_size=2,stride=2)
-
-        # 5-9
-        self.depth1 = nn.Conv2d(in_channels=(numSlices*2),out_channels=(numSlices*2),kernel_size=5,stride=2,padding=0,groups=(numSlices*2),bias=False)
-        nn.init.kaiming_uniform_(self.depth1.weight)
-        self.normLay2 = nn.LayerNorm(normalized_shape=[(numSlices*2),20,20]) # Will likely have to change y and z in [x,y,z]
-        self.relu2 = nn.LeakyReLU()
-        self.maxpl2 = nn.MaxPool2d(kernel_size=2,stride=2)
-        self.point1 = nn.Conv2d(in_channels=(numSlices*2),out_channels=(numSlices*4),kernel_size=1,stride=1,padding=0,bias=True)
-        nn.init.xavier_uniform_(self.point1.weight)
-        self.point1.bias.data.fill_(0)
-
-        # 10
-        self.fc1 = nn.Conv2d(in_channels=(numSlices*2),out_channels=1,kernel_size=4,stride=1,padding=0,bias=True) # Will likely need to change kernel_size
-        nn.init.xavier_uniform_(self.fc1.weight)
-        self.fc1.bias.data.fill_(0)
+        self.fc1 = nn.Linear(in_channels, middle_one_channels)
+        self.fc2 = nn.Linear(middle_one_channels, middle_two_channels)
+        self.fc3 = nn.Linear(middle_two_channels, out_channels)
 
     def forward(self, x):
-        #mid = self.fc1(x)
-        #mid = F.relu(mid)
-        #out = self.fc2(mid)
-        #out = torch.flatten(out)
-
-        # 1-4
-        out = self.conv1(x)
-        out = self.normLay1(out)
-        out = self.relu1(out)
-        out = self.maxpl1(out)
-
-        # 5-9
-        out = self.depth1(out)
-        out = self.normLay2(out)
-        out = self.relu2(out)
-        out = self.maxpl2(out)
-        out = self.point1(out)
-
-        # 10
-        out = self.fc1(out)
+        mid = self.fc1(x)
+        mid = F.relu(mid)
+        mid = self.fc2(mid)
+        mid = F.relu(mid)
+        out = self.fc3(mid)
+        out = torch.flatten(out)
         
         return out
 
@@ -192,38 +210,57 @@ class VolumeEstimation(nn.Module):
     Unet++ Architecture (Reference - https://arxiv.org/pdf/1807.10165.pdf)
     params: number of classes and input channels.
     '''	
-    def __init__(self, shortSegModel, longSegModel, fusionMethod='Simple_Concatenation', **kwargs):
+    def __init__(self, shortSegModel, longSegModel, useLong, numSlices, poolingMethod='average', **kwargs):
         super().__init__()
 
         self.shortSegModel = shortSegModel
         self.longSegModel = longSegModel
-        self.numSlices = len(shortSegModel) + len(longSegModel)
-        self.fusionMethod = fusionMethod
+        self.useLong = useLong
+        self.numSlices = numSlices + 1 if self.useLong else numSlices
+        self.poolingMethod = poolingMethod
 
         # Volume Regression Layer
-        self.regression = RegressionBlock(self.numSlices)
+        #self.regression = RegressionBlock(self.numSlices)
+        self.regression = FCBlock(self.numSlices*9216, 9216, 16, 2)
+        self.regression.cuda()
 
-    def segmentationFusion(self, shortSegs, longSegs):
-        if self.fusionMethod == 'Simple_Concatenation':
-            fusionBlock = shortSegs
-            for long in longSegs:
-                fusionBlock.append(long)
-
-        return fusionBlock
+    def poolingFusion(self, sliceMasks):
+        if self.poolingMethod == 'average':
+            return torch.mean(sliceMasks, 0)
+        elif self.poolingMethod == 'max':
+            elements, _ = torch.max(sliceMasks, 0)
+            return elements
+        elif self.poolingMethod == 'min':
+            elements, _ = torch.min(sliceMasks, 0)
+            return elements
 
     def forward(self, input):
-        short_imgs, long_imgs = input
+        long_imgs, short_imgs = input
+        descriptors = torch.Tensor()
 
-        # Pass images through segmentation components of the network
-        shortSegs = []
-        longSegs = []
-        for short in short_imgs:
-            shortSegs.append(self.shortSegModel(short))
+        if self.useLong:
+            longSegs = []
+            for long in long_imgs:
+                longSegs.append(self.longSegModel(long.cuda()).data.cpu().numpy())
+                #torch.cuda.empty_cache()
+            longSegs = torch.as_tensor(np.array(longSegs))
+            longSegs = torch.squeeze(longSegs)
+            longDesciptor = self.poolingFusion(longSegs)
+            descriptors = torch.cat([descriptors,longDesciptor])
 
-        for long in long_imgs:
-            longSegs.append(self.longSegModel(long))
+        for slice in short_imgs:
+            sliceSegs = []
+            for short in slice:
+                sliceSegs.append(self.shortSegModel(short.cuda()).data.cpu().numpy())
+                #torch.cuda.empty_cache()
+            sliceSegs = torch.as_tensor(np.array(sliceSegs))
+            sliceSegs = torch.squeeze(sliceSegs)
+            sliceDesciptor = self.poolingFusion(sliceSegs)
+            descriptors = torch.cat([descriptors,sliceDesciptor])
 
-        regInput = self.segmentationFusion(shortSegs, longSegs)
+        #descriptors = torch.as_tensor(np.array(longSegs))
+        regInput = torch.flatten(descriptors)
+        regInput = regInput.cuda()
         output = self.regression(regInput)
 
         return output

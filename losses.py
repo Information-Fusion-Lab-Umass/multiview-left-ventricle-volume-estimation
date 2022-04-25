@@ -27,5 +27,9 @@ class RMSELoss(nn.Module):
         super().__init__()
         self.mse = nn.MSELoss()
         
-    def forward(self,input,target):
-        return torch.sqrt(self.mse(target,input))
+    def forward(self,edv_output, esv_output,target):
+        target[0] = torch.as_tensor(target[0])
+        target[0] = target[0].cuda()
+        target[1] = torch.as_tensor(target[1])
+        target[1] = target[1].cuda()
+        return torch.sqrt(self.mse(edv_output, target[0])) + torch.sqrt(self.mse(esv_output, target[1]))

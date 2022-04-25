@@ -43,7 +43,6 @@ def parse_args():
                         help='model architecture: ' +
                         ' | '.join(ARCH_NAMES) +
                         ' (default: NestedUNet)')
-    parser.add_argument('--deep_supervision', default=False, type=str2bool)
     parser.add_argument('--input_channels', default=3, type=int,
                         help='input channels')
     parser.add_argument('--num_classes', default=1, type=int,
@@ -179,17 +178,14 @@ def validate(config, val_loader, model, criterion):
                         ('iou', avg_meters['iou'].avg),
                         ('dice', avg_meters['dice'].avg)])
 
-def main_func(train_ids, val_ids, modelName, fileName):
+def main_func(train_groups, val_group, modelName, fileName):
     config = vars(parse_args())
     config['name'] = modelName
     fw = open('batch_results_train/'+ fileName, 'w')
     print('config of dataset is ' + str(config['dataset']))
     fw.write('config of dataset is ' + str(config['dataset']) + '\n')    
     if config['name'] is None:
-        if config['deep_supervision']:
-            config['name'] = '%s_%s_wDS' % (config['dataset'], config['arch'])
-        else:
-            config['name'] = '%s_%s_woDS' % (config['dataset'], config['arch'])
+        config['name'] = '%s_%s_woDS' % (config['dataset'], config['arch'])
     os.makedirs('models/%s' % config['name'], exist_ok=True)
 
     print('-' * 20)
@@ -215,8 +211,7 @@ def main_func(train_ids, val_ids, modelName, fileName):
     print("=> creating model %s" % config['arch'])
     fw.write("=> creating model %s" % config['arch'] + '\n')   
     model = archs.__dict__[config['arch']](config['num_classes'],
-                                           config['input_channels'],
-                                           config['deep_supervision'])
+                                           config['input_channels'])
 
     model = model.cuda()
 
@@ -248,22 +243,23 @@ def main_func(train_ids, val_ids, modelName, fileName):
     img_ids = [os.path.splitext(os.path.basename(p))[0] for p in img_ids]
 
     train_ids = []
-    for train_group in train_ids:
-        with open(train_group, 'r') as file:
+    for train_group in train_groups:
+        with open(train_group + '.txt', 'r') as file:
             train_ids.append([line.rstrip() for line in file])
+    train_ids = train_ids[0] + train_ids[1] + train_ids[2]
 
     val_ids = []
-    with open(val_ids, 'r') as file:
+    with open(val_group + '.txt', 'r') as file:
         val_ids = [line.rstrip() for line in file]
     
     val_img_ids = []
     train_img_ids = []
 
     for image in img_ids:
-        im_begin = image.split('.')[0]
-        if int(im_begin[-1]) in val_ids:
+        im_begin = image.split('_')[0]
+        if im_begin in val_ids:
             val_img_ids.append(image)
-        elif int(im_begin[-1]) in train_ids:
+        elif im_begin in train_ids:
             train_img_ids.append(image)
 
     # train_transform = Compose([
@@ -374,10 +370,10 @@ def main_func(train_ids, val_ids, modelName, fileName):
         torch.cuda.empty_cache()
 
 
-def perform_validation(modelName, test_ids, fileName):
+def perform_validation(modelName, test_group, fileName):
     #args = parse_args()
 
-    fw = open('batch_results_val/' + fileName, 'w') 
+    fw = open('batch_results_test/' + fileName, 'w') 
     #with open('models/%s/config.yml' % args.name, 'r') as f:
     with open('models/%s/config.yml' % modelName, 'r') as f:   
         config = yaml.load(f, Loader=yaml.FullLoader)
@@ -398,8 +394,7 @@ def perform_validation(modelName, test_ids, fileName):
     print("=> creating model %s" % config['arch'])
     fw.write("=> creating model %s" % config['arch'] + '\n')
     model = archs.__dict__[config['arch']](config['num_classes'],
-                                           config['input_channels'],
-                                           config['deep_supervision'])
+                                           config['input_channels'])
 
     model = model.cuda()
 
@@ -409,13 +404,13 @@ def perform_validation(modelName, test_ids, fileName):
 
     #_, val_img_ids = train_test_split(img_ids, test_size=0.99, random_state=41)
     test_idx = []
-    with open(test_ids, 'r') as file:
+    with open(test_group +  '.txt', 'r') as file:
         test_idx = [line.rstrip() for line in file]
 
     test_img_ids = []
     for img in img_ids:
-        im_begin = img.split('.')[0]
-        if int(im_begin[-1]) in test_idx:
+        im_begin = img.split('_')[0]
+        if im_begin in test_idx:
             test_img_ids.append(img)
 
     model.load_state_dict(torch.load('models/%s/model.pth' %
@@ -454,10 +449,7 @@ def perform_validation(modelName, test_ids, fileName):
             target = target.cuda()
 
             # compute output
-            if config['deep_supervision']:
-                output = model(input)[-1]
-            else:
-                output = model(input)
+            output = model(input)
 
             iou = iou_score(output, target)
             avg_meter.update(iou, input.size(0))
@@ -511,15 +503,18 @@ def main():
     #params = vars(parse_args())
     id_groups = ['ids_group1', 'ids_group2', 'ids_group3', 'ids_group4', 'ids_group5']
     for test_ids in id_groups:
-        training_groups = id_groups[id_groups != test_ids]
+        training_groups = id_groups.copy()
+        training_groups.remove(test_ids)
         for val_ids in training_groups:
-            train_ids = training_groups[training_groups != val_ids]
+            train_ids = training_groups.copy()
+            train_ids.remove(val_ids)
 
             modelName = 'shortAxis_val_' + val_ids + '_test_' + test_ids
             trainFileName = 'shortAxis_val_' + val_ids + '_test_' + test_ids + '_trainingResult'
             testFileName = 'shortAxis_val_' + val_ids + '_test_' + test_ids + '_testResult'
-            main_func(train_ids, val_ids, modelName, trainFileName)
+            #main_func(train_ids, val_ids, modelName, trainFileName)
             perform_validation(modelName, test_ids, testFileName)
+            exit()
 
 if __name__ == '__main__':
     main()
